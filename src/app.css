@@ -1,0 +1,130 @@
+@import "tailwindcss";
+
+@theme {
+  --color-ink-50: #fafafa;
+  --color-ink-100: #f4f4f5;
+  --color-ink-200: #e4e4e7;
+  --color-ink-300: #a1a1aa;
+  --color-ink-400: #71717a;
+  --color-ink-500: #52525b;
+  --color-ink-600: #3f3f46;
+  --color-ink-700: #27272a;
+  --color-ink-800: #1c1c20;
+  --color-ink-900: #131316;
+  --color-ink-950: #0a0a0c;
+
+  --font-display: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Code", ui-monospace, monospace;
+
+  --radius-card: 14px;
+  --radius-pill: 999px;
+}
+
+@layer base {
+  html,
+  body {
+    background: transparent;
+    color: var(--color-ink-100);
+    font-family: var(--font-display);
+    -webkit-font-smoothing: antialiased;
+    user-select: none;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.08);
+    border-radius: 4px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.16);
+  }
+}
+
+@layer components {
+  .dock-surface {
+    background: linear-gradient(
+      180deg,
+      rgba(19, 19, 22, 0.86) 0%,
+      rgba(10, 10, 12, 0.92) 100%
+    );
+    backdrop-filter: blur(28px) saturate(140%);
+    -webkit-backdrop-filter: blur(28px) saturate(140%);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow:
+      0 24px 48px -16px rgba(0, 0, 0, 0.7),
+      0 0 0 1px rgba(255, 255, 255, 0.03) inset;
+  }
+
+  .card-row {
+    @apply relative grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-[var(--radius-card)] px-3 py-3 transition-all;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+  }
+  .card-row:hover {
+    background: rgba(255, 255, 255, 0.04);
+    border-color: rgba(255, 255, 255, 0.09);
+    transform: translateX(-1px);
+  }
+  .card-row.active {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.12);
+  }
+
+  .accent-rail {
+    position: absolute;
+    left: -1px;
+    top: 8px;
+    bottom: 8px;
+    width: 3px;
+    border-radius: 4px;
+    background: var(--accent-color, transparent);
+    box-shadow: 0 0 12px var(--accent-color, transparent);
+    opacity: 0;
+    transition: opacity 0.2s ease;
+  }
+  .card-row.active .accent-rail {
+    opacity: 1;
+  }
+
+  .icon-tile {
+    @apply flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-xs font-semibold;
+    background: color-mix(in srgb, var(--accent-color) 18%, transparent);
+    color: color-mix(in srgb, var(--accent-color) 88%, white 12%);
+    border: 1px solid color-mix(in srgb, var(--accent-color) 24%, transparent);
+  }
+
+  .hotkey-pill {
+    @apply inline-flex h-5 items-center rounded-md border border-white/8 bg-white/4 px-1.5 font-mono text-[10px] text-zinc-400;
+    letter-spacing: 0.02em;
+  }
+
+  .meta-text {
+    @apply text-[11px] text-zinc-500;
+  }
+  .meta-text.unread {
+    @apply font-medium text-zinc-300;
+  }
+
+  .ghost-btn {
+    @apply inline-flex items-center justify-center rounded-full border border-dashed border-white/12 text-zinc-400 transition-colors;
+  }
+  .ghost-btn:hover {
+    @apply border-white/24 text-zinc-200;
+    background: rgba(255, 255, 255, 0.03);
+  }
+}
+
+/* Drag region — Tauri uses data-tauri-drag-region; we expose a class too. */
+[data-tauri-drag-region] {
+  -webkit-app-region: drag;
+}
+[data-tauri-drag-region] button,
+[data-tauri-drag-region] a {
+  -webkit-app-region: no-drag;
+}
