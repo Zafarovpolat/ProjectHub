@@ -1,0 +1,89 @@
+name: Release (Windows)
+
+# Builds the Windows installer (MSI + NSIS) for any `v*` tag pushed to
+# the repo and attaches the artifacts to a GitHub Release. The release
+# itself is created automatically if it doesn't already exist.
+#
+# Trigger flow:
+#   1. Merge the PR into `main`.
+#   2. `git tag v0.2.0 && git push origin v0.2.0`
+#   3. This workflow runs, builds, and uploads the installers.
+#
+# The `workflow_dispatch` trigger lets us re-run the build manually
+# (e.g. if it failed) without re-tagging.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.2.0) — only used for workflow_dispatch"
+        required: true
+        default: "v0.2.0"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Windows installer
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: tag
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $tag = $env:GITHUB_REF -replace "refs/tags/", ""
+          } else {
+            $tag = "${{ github.event.inputs.tag }}"
+          }
+          Write-Output "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Output "Resolved tag: $tag"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "pnpm"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "src-tauri -> target"
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build (Tauri)
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Tag name + display name for the GitHub Release. If the
+          # release already exists, `tauri-action` appends new
+          # artifacts instead of creating a duplicate.
+          tagName: ${{ steps.tag.outputs.tag }}
+          releaseName: "ProjectHub ${{ steps.tag.outputs.tag }}"
+          releaseBody: |
+            Automated Windows build for `${{ steps.tag.outputs.tag }}`.
+
+            Installers below — pick **`*-setup.exe`** for an interactive
+            NSIS install or **`*.msi`** for unattended/MDM rollouts.
+          releaseDraft: false
+          prerelease: false
+          includeUpdaterJson: false
