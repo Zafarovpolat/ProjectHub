@@ -22,8 +22,11 @@
       dock.activeId = e.payload.project.id;
       void refreshProjects();
     });
-    // Dialog window emits this on successful create.
+    // Dialog windows emit these on create / delete / reorder / hotkey change.
     const unlistenCreated = listen("project:created", () => {
+      void refreshProjects();
+    });
+    const unlistenChanged = listen("project:changed", () => {
       void refreshProjects();
     });
 
@@ -31,6 +34,7 @@
       clearInterval(tick);
       void unlistenActivated.then((fn) => fn());
       void unlistenCreated.then((fn) => fn());
+      void unlistenChanged.then((fn) => fn());
     };
   });
 
@@ -79,6 +83,36 @@
       console.error("Failed to open add-project window:", err);
     });
   }
+
+  /** Open the Manage Projects dialog (delete / reorder / set hotkeys). */
+  async function openManageDialog() {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+    const existing = await WebviewWindow.getByLabel("manage");
+    if (existing) {
+      await existing.show();
+      await existing.setFocus();
+      return;
+    }
+    const win = new WebviewWindow("manage", {
+      url: "/dialog/manage/",
+      title: "Manage projects — ProjectHub",
+      width: 520,
+      height: 640,
+      minWidth: 440,
+      minHeight: 480,
+      center: true,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      decorations: true,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      focus: true,
+    });
+    win.once("tauri://error", (err) => {
+      console.error("Failed to open manage window:", err);
+    });
+  }
 </script>
 
 <aside
@@ -101,8 +135,9 @@
     <button
       type="button"
       class="text-zinc-500 hover:text-zinc-300"
-      aria-label="Settings (coming soon)"
-      title="Settings — coming in v0.2"
+      aria-label="Manage projects"
+      title="Manage projects"
+      onclick={openManageDialog}
     >
       <Settings size={14} />
     </button>
