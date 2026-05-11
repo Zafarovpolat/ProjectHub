@@ -4,11 +4,9 @@
   import { Plus, Settings } from "lucide-svelte";
 
   import ProjectCard from "./ProjectCard.svelte";
-  import AddProjectDialog from "./AddProjectDialog.svelte";
   import { activate, dock, refreshProjects } from "$lib/store.svelte";
   import type { ActivationResult } from "$lib/types";
 
-  let addOpen = $state(false);
   let lastSwitchedAt = $state<number | null>(null);
 
   onMount(() => {
@@ -20,14 +18,19 @@
     }, 20_000);
 
     // Hotkey activations from Rust come through this event.
-    const unlistenP = listen<ActivationResult>("project:activated", (e) => {
+    const unlistenActivated = listen<ActivationResult>("project:activated", (e) => {
       dock.activeId = e.payload.project.id;
+      void refreshProjects();
+    });
+    // Dialog window emits this on successful create.
+    const unlistenCreated = listen("project:created", () => {
       void refreshProjects();
     });
 
     return () => {
       clearInterval(tick);
-      void unlistenP.then((fn) => fn());
+      void unlistenActivated.then((fn) => fn());
+      void unlistenCreated.then((fn) => fn());
     };
   });
 
@@ -37,6 +40,44 @@
     } catch {
       /* error captured in store */
     }
+  }
+
+  /**
+   * Open the "Add project" dialog in a SEPARATE Tauri window.
+   *
+   * Why a separate window: the dock's webview is physically ~240px wide, so
+   * a CSS modal overlay would be clipped to that width. The dialog is a
+   * 480×640 floating window we create programmatically.
+   */
+  async function openAddDialog() {
+    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+
+    const existing = await WebviewWindow.getByLabel("add-project");
+    if (existing) {
+      await existing.show();
+      await existing.setFocus();
+      return;
+    }
+
+    const win = new WebviewWindow("add-project", {
+      url: "/dialog/add-project/",
+      title: "New project — ProjectHub",
+      width: 480,
+      height: 640,
+      minWidth: 420,
+      minHeight: 520,
+      center: true,
+      resizable: true,
+      minimizable: false,
+      maximizable: false,
+      decorations: true,
+      alwaysOnTop: true,
+      skipTaskbar: false,
+      focus: true,
+    });
+    win.once("tauri://error", (err) => {
+      console.error("Failed to open add-project window:", err);
+    });
   }
 </script>
 
@@ -80,7 +121,7 @@
         <button
           type="button"
           class="rounded-lg border border-white/12 bg-white/8 px-3 py-1.5 text-xs font-medium text-zinc-100 hover:bg-white/12"
-          onclick={() => (addOpen = true)}
+          onclick={openAddDialog}
         >
           Add project
         </button>
@@ -110,7 +151,7 @@
       <button
         type="button"
         class="ghost-btn flex w-full items-center justify-center gap-1.5 rounded-[var(--radius-card)] py-3 text-xs"
-        onclick={() => (addOpen = true)}
+        onclick={openAddDialog}
         aria-label="Add project"
       >
         <Plus size={14} />
@@ -121,11 +162,9 @@
 
   <!-- Footer -->
   <footer
-    class="border-t border-white/4 px-4 py-2 text-[10px] text-zinc-500 select-none flex items-center justify-between"
+    class="border-t border-white/4 px-3 py-2 text-[10px] text-zinc-500 select-none flex items-center justify-between gap-2"
   >
     <span>{dock.projects.length} active</span>
-    <span class="font-mono text-zinc-600">⌃⌥Space</span>
+    <span class="hotkey-pill text-[9px]">Ctrl Alt Space</span>
   </footer>
 </aside>
-
-<AddProjectDialog bind:open={addOpen} onclose={() => (addOpen = false)} />

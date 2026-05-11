@@ -4,3 +4,6 @@
 // See: https://v2.tauri.app/start/frontend/sveltekit/
 export const ssr = false;
 export const prerender = true;
+// Emit each route as `<route>/index.html` so Tauri can serve dialog windows
+// via URLs without `.html` suffixes (e.g. `/dialog/add-project`).
+export const trailingSlash = "always";

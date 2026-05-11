@@ -25,7 +25,7 @@
   }
 
   const hotkeyText = $derived(
-    project.hotkey_index ? `⌃⌥${project.hotkey_index}` : null
+    project.hotkey_index ? `Ctrl Alt ${project.hotkey_index}` : null
   );
   const windowCount = $derived(project.windows.length);
   const subtitle = $derived(
