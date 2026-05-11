@@ -7,6 +7,7 @@ import type {
   CreateProjectInput,
   EnumeratedWindow,
   EventEntry,
+  PreferencesView,
   ProjectView,
   UpdateProjectInput,
 } from "./types";
@@ -36,6 +37,14 @@ export const api = {
     return invoke("reorder_projects", { order });
   },
 
+  addWindowsToProject(id: string, hwnds: number[]): Promise<ProjectView> {
+    return invoke("add_windows_to_project", { id, hwnds });
+  },
+
+  removeWindowFromProject(id: string, windowId: string): Promise<ProjectView> {
+    return invoke("remove_window_from_project", { id, windowId });
+  },
+
   activateProject(id: string): Promise<ActivationResult> {
     return invoke("activate_project", { id });
   },
@@ -50,5 +59,22 @@ export const api = {
 
   paletteColors(): Promise<string[]> {
     return invoke("palette_colors");
+  },
+
+  getPreferences(): Promise<PreferencesView> {
+    return invoke("get_preferences");
+  },
+
+  /// Pass `combo=null` to revert to the built-in default
+  /// (`Ctrl+Alt+Space`). Returns the new effective preferences.
+  setDockToggleHotkey(combo: string | null): Promise<PreferencesView> {
+    return invoke("set_dock_toggle_hotkey", { combo });
+  },
+
+  /// Validate that `combo` parses correctly. Resolves with the trimmed
+  /// canonical input on success, rejects with a user-facing message
+  /// otherwise.
+  validateHotkeyCombo(combo: string): Promise<string> {
+    return invoke("validate_hotkey_combo", { combo });
   },
 };

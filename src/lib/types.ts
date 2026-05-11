@@ -15,12 +15,22 @@ export interface WindowRefView {
   missed_ticks: number;
 }
 
+export interface PreferencesView {
+  /// Effective dock-toggle combo (user override if set, else default).
+  dock_toggle_hotkey: string;
+  /// Whether `dock_toggle_hotkey` is a user override or the default.
+  dock_toggle_is_custom: boolean;
+}
+
 export interface ProjectView {
   id: string;
   name: string;
   color: string;
   initials: string;
   hotkey_index: number | null;
+  /// User-defined activation combo (e.g. `"Ctrl+Alt+F1"`). When set,
+  /// overrides `hotkey_index`. `null` means "use the slot-index combo".
+  hotkey_combo: string | null;
   windows: WindowRefView[];
   created_at: string;
   updated_at: string;
@@ -55,6 +65,9 @@ export interface UpdateProjectInput {
   color?: string | null;
   initials?: string | null;
   hotkey_index?: number | null | undefined;
+  /// Set/clear the per-project hotkey combo. Use `undefined` to leave
+  /// it untouched, `null` to clear, or a string to set.
+  hotkey_combo?: string | null | undefined;
   window_hwnds?: number[] | null;
 }
 
@@ -80,6 +93,7 @@ export type EventKind =
       title: string;
       missed_ticks: number;
     }
+  | { type: "window_auto_rebound"; project_name: string; title: string }
   | { type: "hotkey_triggered"; combo: string }
   | { type: "dock_toggled"; visible: boolean };
 

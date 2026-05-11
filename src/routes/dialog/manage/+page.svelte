@@ -1,22 +1,41 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { invoke } from "@tauri-apps/api/core";
   import { emit, listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
-  import type { ProjectView } from "$lib/types";
-  import { Trash2, ChevronUp, ChevronDown, Hash, AlertTriangle } from "lucide-svelte";
+  import type { PreferencesView, ProjectView } from "$lib/types";
+  import { api } from "$lib/api";
+  import HotkeyInput from "$lib/components/HotkeyInput.svelte";
+  import WindowPicker from "$lib/components/WindowPicker.svelte";
+  import {
+    Trash2,
+    ChevronUp,
+    ChevronDown,
+    Hash,
+    AlertTriangle,
+    Plus,
+    X,
+  } from "lucide-svelte";
 
   let projects = $state<ProjectView[]>([]);
+  let prefs = $state<PreferencesView | null>(null);
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let pendingDeleteId = $state<string | null>(null);
   let expandedId = $state<string | null>(null);
+  /// Project ID whose add-window picker is currently open. Only one
+  /// picker can be open at a time to keep the UI uncluttered.
+  let addingForId = $state<string | null>(null);
+  let pickerSelection = $state<number[]>([]);
 
   async function refresh() {
     try {
-      const list = await invoke<ProjectView[]>("list_projects");
+      const [list, p] = await Promise.all([
+        api.listProjects(),
+        api.getPreferences(),
+      ]);
       projects = list;
+      prefs = p;
       loading = false;
     } catch (e) {
       errorMessage = String(e);
@@ -50,10 +69,58 @@
 
   async function deleteProject(id: string) {
     try {
-      await invoke<boolean>("delete_project", { id });
+      await api.deleteProject(id);
       await emit("project:changed");
       pendingDeleteId = null;
       await refresh();
+    } catch (e) {
+      errorMessage = String(e);
+    }
+  }
+
+  async function commitAddWindows(id: string) {
+    if (pickerSelection.length === 0) {
+      addingForId = null;
+      return;
+    }
+    try {
+      await api.addWindowsToProject(id, pickerSelection);
+      await emit("project:changed");
+      pickerSelection = [];
+      addingForId = null;
+      expandedId = id;
+      await refresh();
+    } catch (e) {
+      errorMessage = String(e);
+    }
+  }
+
+  async function removeWindow(projectId: string, windowId: string) {
+    try {
+      await api.removeWindowFromProject(projectId, windowId);
+      await emit("project:changed");
+      await refresh();
+    } catch (e) {
+      errorMessage = String(e);
+    }
+  }
+
+  async function setHotkeyCombo(id: string, combo: string | null) {
+    try {
+      // Sending `null` clears the custom combo and falls back to the
+      // slot-index hotkey (which may also be null).
+      await api.updateProject({ id, hotkey_combo: combo });
+      await emit("project:changed");
+      await refresh();
+    } catch (e) {
+      errorMessage = String(e);
+    }
+  }
+
+  async function setDockToggleHotkey(combo: string | null) {
+    try {
+      const next = await api.setDockToggleHotkey(combo);
+      prefs = next;
     } catch (e) {
       errorMessage = String(e);
     }
@@ -65,7 +132,7 @@
     [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
     projects = next;
     try {
-      await invoke("reorder_projects", { order: next.map((p) => p.id) });
+      await api.reorderProjects(next.map((p) => p.id));
       await emit("project:changed");
     } catch (e) {
       errorMessage = String(e);
@@ -78,7 +145,7 @@
     [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
     projects = next;
     try {
-      await invoke("reorder_projects", { order: next.map((p) => p.id) });
+      await api.reorderProjects(next.map((p) => p.id));
       await emit("project:changed");
     } catch (e) {
       errorMessage = String(e);
@@ -88,9 +155,7 @@
 
   async function setHotkey(id: string, value: number | null) {
     try {
-      await invoke<ProjectView>("update_project", {
-        input: { id, hotkey_index: value },
-      });
+      await api.updateProject({ id, hotkey_index: value });
       await emit("project:changed");
       await refresh();
     } catch (e) {
@@ -109,9 +174,32 @@
   <header>
     <h1 class="text-base font-semibold">Manage projects</h1>
     <p class="mt-0.5 text-[11px] text-zinc-500">
-      Reorder, assign hotkeys, or remove projects.
+      Reorder, customise hotkeys, add or remove windows, and pick the dock-toggle combo.
     </p>
   </header>
+
+  {#if prefs}
+    <section class="rounded-xl border border-white/8 bg-white/3 p-3">
+      <div class="flex items-center justify-between gap-3">
+        <div class="flex min-w-0 flex-col">
+          <span class="text-[11px] uppercase tracking-wide text-zinc-500">
+            Dock toggle hotkey
+          </span>
+          <span class="text-[11px] text-zinc-500">
+            Global combo that shows or hides the dock.
+            {#if !prefs.dock_toggle_is_custom}
+              <span class="text-zinc-600">(using default)</span>
+            {/if}
+          </span>
+        </div>
+        <HotkeyInput
+          value={prefs.dock_toggle_hotkey}
+          showReset={prefs.dock_toggle_is_custom}
+          onchange={(combo) => setDockToggleHotkey(combo)}
+        />
+      </div>
+    </section>
+  {/if}
 
   {#if errorMessage}
     <p class="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-xs text-red-300">
@@ -192,69 +280,150 @@
             </div>
           </div>
 
-          <div class="flex items-center gap-2 text-[11px] text-zinc-400">
-            <Hash size={12} class="text-zinc-500" />
-            <span>Hotkey:</span>
-            <div class="flex flex-wrap gap-1">
-              {#each Array(9) as _, n}
-                {@const num = n + 1}
-                {@const taken = projects.some(
-                  (q) => q.id !== p.id && q.hotkey_index === num,
-                )}
+          <div class="flex flex-col gap-2 border-t border-white/5 pt-2 text-[11px] text-zinc-400">
+            <div class="flex items-center gap-2">
+              <Hash size={12} class="text-zinc-500" />
+              <span>Slot:</span>
+              <div class="flex flex-wrap gap-1">
+                {#each Array(9) as _, n}
+                  {@const num = n + 1}
+                  {@const taken = projects.some(
+                    (q) => q.id !== p.id && q.hotkey_index === num,
+                  )}
+                  <button
+                    type="button"
+                    class="h-6 w-6 rounded border text-[10px] font-mono transition-colors disabled:cursor-not-allowed"
+                    style:background-color={p.hotkey_index === num
+                      ? "color-mix(in srgb, " + p.color + " 22%, transparent)"
+                      : "transparent"}
+                    style:border-color={p.hotkey_index === num
+                      ? p.color
+                      : "rgba(255,255,255,0.1)"}
+                    style:color={p.hotkey_index === num
+                      ? p.color
+                      : taken
+                        ? "rgb(63,63,70)"
+                        : "rgb(161,161,170)"}
+                    disabled={taken}
+                    title={taken ? "Used by another project" : `Ctrl+Alt+${num}`}
+                    onclick={() => setHotkey(p.id, num)}
+                  >
+                    {num}
+                  </button>
+                {/each}
                 <button
                   type="button"
-                  class="h-6 w-6 rounded border text-[10px] font-mono transition-colors disabled:cursor-not-allowed"
-                  style:background-color={p.hotkey_index === num
-                    ? "color-mix(in srgb, " + p.color + " 22%, transparent)"
-                    : "transparent"}
-                  style:border-color={p.hotkey_index === num
-                    ? p.color
-                    : "rgba(255,255,255,0.1)"}
-                  style:color={p.hotkey_index === num
-                    ? p.color
-                    : taken
-                      ? "rgb(63,63,70)"
-                      : "rgb(161,161,170)"}
-                  disabled={taken}
-                  title={taken ? "Used by another project" : `Ctrl+Alt+${num}`}
-                  onclick={() => setHotkey(p.id, num)}
+                  class="h-6 px-2 rounded border border-dashed border-white/12 text-[10px] text-zinc-500 hover:text-zinc-200"
+                  onclick={() => setHotkey(p.id, null)}
+                  title="Clear slot hotkey"
                 >
-                  {num}
+                  clear
                 </button>
-              {/each}
-              <button
-                type="button"
-                class="h-6 px-2 rounded border border-dashed border-white/12 text-[10px] text-zinc-500 hover:text-zinc-200"
-                onclick={() => setHotkey(p.id, null)}
-                title="Clear hotkey"
-              >
-                clear
-              </button>
+              </div>
+            </div>
+            <div class="flex items-center justify-between gap-2">
+              <span class="text-zinc-500">
+                Custom hotkey
+                <span class="text-zinc-600">(overrides the slot above)</span>
+              </span>
+              <HotkeyInput
+                value={p.hotkey_combo}
+                placeholder="Click and press combo…"
+                showReset={!!p.hotkey_combo}
+                onchange={(combo) => setHotkeyCombo(p.id, combo)}
+              />
             </div>
           </div>
 
-          {#if expandedId === p.id && p.windows.length > 0}
-            <ul class="flex flex-col gap-1 rounded-md border border-white/5 bg-black/20 p-1.5">
-              {#each p.windows as w (w.id)}
-                <li
-                  class="flex items-center justify-between gap-2 rounded px-2 py-1 text-[11px]"
-                  class:opacity-60={!w.live}
-                >
-                  <span class="min-w-0 truncate" class:line-through={!w.live}>
-                    {w.title_snapshot || w.title_pattern}
-                  </span>
-                  {#if !w.live}
-                    <span
-                      class="inline-flex shrink-0 items-center gap-1 rounded-sm border border-orange-500/30 bg-orange-500/10 px-1.5 py-[1px] text-[10px] font-medium text-orange-300"
-                      title="Missed {w.missed_ticks} pruner tick{w.missed_ticks === 1 ? '' : 's'}"
+          {#if expandedId === p.id}
+            <div class="flex flex-col gap-2 rounded-md border border-white/5 bg-black/20 p-1.5">
+              {#if p.windows.length > 0}
+                <ul class="flex flex-col gap-1">
+                  {#each p.windows as w (w.id)}
+                    <li
+                      class="group flex items-center justify-between gap-2 rounded px-2 py-1 text-[11px]"
+                      class:opacity-60={!w.live}
                     >
-                      <AlertTriangle size={10} />
-                      closed
+                      <span
+                        class="min-w-0 truncate"
+                        class:line-through={!w.live}
+                      >
+                        {w.title_snapshot || w.title_pattern}
+                      </span>
+                      <span class="flex shrink-0 items-center gap-1">
+                        {#if !w.live}
+                          <span
+                            class="inline-flex items-center gap-1 rounded-sm border border-orange-500/30 bg-orange-500/10 px-1.5 py-[1px] text-[10px] font-medium text-orange-300"
+                            title="Missed {w.missed_ticks} pruner tick{w.missed_ticks === 1 ? '' : 's'}"
+                          >
+                            <AlertTriangle size={10} />
+                            closed
+                          </span>
+                        {/if}
+                        <button
+                          type="button"
+                          class="flex h-6 w-6 items-center justify-center rounded text-zinc-500 opacity-0 transition group-hover:opacity-100 hover:bg-red-500/10 hover:text-red-300"
+                          onclick={() => removeWindow(p.id, w.id)}
+                          aria-label="Remove window"
+                          title="Remove from project"
+                        >
+                          <X size={12} />
+                        </button>
+                      </span>
+                    </li>
+                  {/each}
+                </ul>
+              {:else}
+                <p class="px-2 py-1 text-[11px] text-zinc-500">No windows yet.</p>
+              {/if}
+              {#if addingForId === p.id}
+                <div class="flex flex-col gap-2 rounded border border-white/5 bg-white/2 p-2">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="text-[11px] uppercase tracking-wide text-zinc-500">
+                      Add windows to {p.name}
                     </span>
-                  {/if}
-                </li>
-              {/each}
-            </ul>
+                    <button
+                      type="button"
+                      class="rounded px-2 py-0.5 text-[11px] text-zinc-400 hover:text-zinc-100"
+                      onclick={() => {
+                        addingForId = null;
+                        pickerSelection = [];
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                  <div class="h-56">
+                    <WindowPicker
+                      bind:selected={pickerSelection}
+                      onchange={(hwnds) => (pickerSelection = hwnds)}
+                    />
+                  </div>
+                  <div class="flex items-center justify-end gap-2">
+                    <button
+                      type="button"
+                      class="rounded border border-white/16 bg-white/8 px-3 py-1 text-[11px] text-zinc-100 hover:bg-white/12 disabled:opacity-40"
+                      disabled={pickerSelection.length === 0}
+                      onclick={() => commitAddWindows(p.id)}
+                    >
+                      Add {pickerSelection.length || ""} window{pickerSelection.length === 1 ? "" : "s"}
+                    </button>
+                  </div>
+                </div>
+              {:else}
+                <button
+                  type="button"
+                  class="flex items-center gap-1.5 self-start rounded-md border border-dashed border-white/12 px-2 py-1 text-[11px] text-zinc-400 hover:bg-white/4 hover:text-zinc-100"
+                  onclick={() => {
+                    addingForId = p.id;
+                    pickerSelection = [];
+                  }}
+                >
+                  <Plus size={12} />
+                  Add windows
+                </button>
+              {/if}
+            </div>
           {/if}
 
           {#if pendingDeleteId === p.id}

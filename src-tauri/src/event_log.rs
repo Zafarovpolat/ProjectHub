@@ -68,6 +68,12 @@ pub enum EventKind {
         title: String,
         missed_ticks: u8,
     },
+    /// The pruner found a live window matching the fingerprint of a
+    /// previously auto-removed ref and reattached it to the same project.
+    WindowAutoRebound {
+        project_name: String,
+        title: String,
+    },
     HotkeyTriggered {
         combo: String,
     },

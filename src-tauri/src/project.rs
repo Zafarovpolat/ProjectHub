@@ -76,6 +76,19 @@ pub struct LaunchCommand {
     pub working_dir: Option<String>,
 }
 
+/// Fingerprint of a window that was auto-removed from a project but is
+/// remembered so we can reattach it when a window with the same
+/// `(exe_path, title_pattern, class_name)` reappears within the grace
+/// window (see `DROPPED_FINGERPRINT_TTL`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DroppedFingerprint {
+    pub title_snapshot: String,
+    pub title_pattern: String,
+    pub exe_path: String,
+    pub class_name: Option<String>,
+    pub dropped_at: DateTime<Utc>,
+}
+
 /// A user-defined project: a name + a set of windows + (optional) launch hints.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
@@ -85,9 +98,22 @@ pub struct Project {
     pub color: String,
     /// 1-2 character identifier shown inside the icon tile.
     pub initials: String,
-    /// Hotkey index (1-based), or `None` if no hotkey is bound.
+    /// Hotkey index (1-based) used when `hotkey_combo` is unset. Kept
+    /// for backwards-compat with v0.1 stores.
     pub hotkey_index: Option<u8>,
+    /// User-defined keyboard combo to activate this project, e.g.
+    /// `Ctrl+Alt+F1` or `Ctrl+Shift+KeyM`. When set, overrides
+    /// `hotkey_index`. Format matches `tauri_plugin_global_shortcut::
+    /// Shortcut`'s `FromStr`.
+    #[serde(default)]
+    pub hotkey_combo: Option<String>,
     pub windows: Vec<WindowRef>,
+    /// Fingerprints of windows that were auto-removed by the pruner.
+    /// Used to re-attach the window when it re-opens (e.g. after Chrome
+    /// restart). Entries older than `DROPPED_FINGERPRINT_TTL` are
+    /// garbage-collected by the pruner.
+    #[serde(default)]
+    pub dropped_fingerprints: Vec<DroppedFingerprint>,
     #[serde(default)]
     pub launch_commands: Vec<LaunchCommand>,
     /// `tg://resolve?...` URI for jumping to a chat. Reserved for v0.2.
@@ -100,6 +126,10 @@ pub struct Project {
     pub last_activated_at: Option<DateTime<Utc>>,
 }
 
+/// How long a dropped fingerprint is kept alive for re-attach.
+/// 24 h: enough to cover a Chrome restart, an overnight reboot, etc.
+pub const DROPPED_FINGERPRINT_TTL: chrono::Duration = chrono::Duration::hours(24);
+
 impl Project {
     pub fn new(name: String, color: String, windows: Vec<WindowRef>) -> Self {
         let now = Utc::now();
@@ -110,7 +140,9 @@ impl Project {
             color,
             initials,
             hotkey_index: None,
+            hotkey_combo: None,
             windows,
+            dropped_fingerprints: Vec::new(),
             launch_commands: Vec::new(),
             tg_chat_uri: None,
             created_at: now,

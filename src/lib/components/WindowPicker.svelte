@@ -5,9 +5,16 @@
   interface Props {
     selected: number[];
     onchange: (hwnds: number[]) => void;
+    /// HWNDs to omit from the list (e.g. already attached to a project).
+    /// They simply don't render rather than being shown as disabled.
+    excludeHwnds?: number[];
   }
 
-  let { selected = $bindable([]), onchange }: Props = $props();
+  let {
+    selected = $bindable([]),
+    onchange,
+    excludeHwnds = [],
+  }: Props = $props();
 
   let windows = $state<EnumeratedWindow[]>([]);
   let loading = $state(false);
@@ -40,15 +47,15 @@
     return parts[parts.length - 1] ?? path;
   }
 
-  const filtered = $derived(
-    filter.trim().length === 0
-      ? windows
-      : windows.filter((w) =>
-          (w.title + " " + w.exe_path)
-            .toLowerCase()
-            .includes(filter.trim().toLowerCase())
-        )
-  );
+  const filtered = $derived.by(() => {
+    const excluded = new Set(excludeHwnds);
+    const base = windows.filter((w) => !excluded.has(w.hwnd));
+    const q = filter.trim().toLowerCase();
+    if (q.length === 0) return base;
+    return base.filter((w) =>
+      (w.title + " " + w.exe_path).toLowerCase().includes(q)
+    );
+  });
 </script>
 
 <div class="flex h-full min-h-0 flex-col gap-2">
