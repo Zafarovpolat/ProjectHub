@@ -16,16 +16,38 @@ use tauri::{AppHandle, Manager, State};
 use uuid::Uuid;
 
 use crate::event_log::{EventKind, EventLog};
+use crate::preferences::{PreferencesFile, PreferencesStore, DEFAULT_DOCK_TOGGLE_COMBO};
 use crate::project::{palette_for_index, Project, WindowRef, DEFAULT_PALETTE};
 use crate::store::ProjectStore;
 use crate::window_manager::{self, EnumeratedWindow};
+
+/// Routing table for the global-shortcut handler: combo string →
+/// "what to do when this shortcut fires". Populated by
+/// [`crate::hotkeys::reregister`] every time projects or preferences
+/// change.
+#[derive(Debug, Default, Clone)]
+pub struct ShortcutRouter {
+    /// Maps the canonical combo string (e.g. `"Ctrl+Alt+Space"`) to the
+    /// action to perform when that combo fires.
+    pub by_combo: std::collections::HashMap<String, RouterAction>,
+}
+
+#[derive(Debug, Clone)]
+pub enum RouterAction {
+    ToggleDock,
+    ActivateProject(Uuid),
+}
 
 /// Application-level state shared across all commands.
 pub struct AppState {
     pub store: ProjectStore,
     pub events: EventLog,
+    pub prefs: PreferencesStore,
     pub active: Mutex<ActiveProject>,
     pub self_pid: u32,
+    /// Reactive routing table — readers (the global-shortcut handler)
+    /// always see the latest set of combos.
+    pub router: Mutex<ShortcutRouter>,
 }
 
 #[derive(Default)]
@@ -73,6 +95,7 @@ pub fn list_projects(state: State<'_, Arc<AppState>>) -> Vec<ProjectView> {
 
 #[tauri::command]
 pub fn create_project(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     input: CreateProjectInput,
 ) -> Result<ProjectView, String> {
@@ -112,11 +135,16 @@ pub fn create_project(
         },
         Some(project.id),
     );
+    let _ = crate::hotkeys::reregister(&app);
     Ok(ProjectView::from(project))
 }
 
 #[tauri::command]
-pub fn delete_project(state: State<'_, Arc<AppState>>, id: Uuid) -> Result<bool, String> {
+pub fn delete_project(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    id: Uuid,
+) -> Result<bool, String> {
     let name = state
         .store
         .get(id)
@@ -132,6 +160,8 @@ pub fn delete_project(state: State<'_, Arc<AppState>>, id: Uuid) -> Result<bool,
             active.id = None;
             active.since = None;
         }
+        drop(active);
+        let _ = crate::hotkeys::reregister(&app);
     }
     Ok(removed)
 }
@@ -143,6 +173,9 @@ pub struct UpdateProjectInput {
     pub color: Option<String>,
     pub initials: Option<String>,
     pub hotkey_index: Option<Option<u8>>,
+    /// Customised activation combo. `Some(Some(_))` sets it,
+    /// `Some(None)` clears it, `None` leaves it as-is.
+    pub hotkey_combo: Option<Option<String>>,
     /// Optional list of HWNDs to *replace* the project's window set with. If
     /// `None`, the existing windows are kept untouched.
     pub window_hwnds: Option<Vec<isize>>,
@@ -150,9 +183,13 @@ pub struct UpdateProjectInput {
 
 #[tauri::command]
 pub fn update_project(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     input: UpdateProjectInput,
 ) -> Result<ProjectView, String> {
+    if let Some(Some(combo)) = &input.hotkey_combo {
+        crate::hotkeys::validate_combo(combo)?;
+    }
     let mut project = state
         .store
         .get(input.id)
@@ -171,6 +208,11 @@ pub fn update_project(
     }
     if let Some(hk) = input.hotkey_index {
         project.hotkey_index = hk;
+    }
+    if let Some(combo) = input.hotkey_combo {
+        project.hotkey_combo = combo
+            .map(|c| c.trim().to_string())
+            .filter(|c| !c.is_empty());
     }
     if let Some(hwnds) = input.window_hwnds {
         let live = window_manager::enumerate_windows(Some(state.self_pid));
@@ -197,6 +239,7 @@ pub fn update_project(
         },
         Some(project.id),
     );
+    let _ = crate::hotkeys::reregister(&app);
     Ok(ProjectView::from(project))
 }
 
@@ -206,6 +249,162 @@ pub fn reorder_projects(
     order: Vec<Uuid>,
 ) -> Result<(), String> {
     state.store.reorder(&order).map_err(err)
+}
+
+/// Append additional windows (by HWND) to an existing project without
+/// touching its current refs. Duplicates are filtered out.
+#[tauri::command]
+pub fn add_windows_to_project(
+    state: State<'_, Arc<AppState>>,
+    id: Uuid,
+    hwnds: Vec<isize>,
+) -> Result<ProjectView, String> {
+    let mut project = state
+        .store
+        .get(id)
+        .ok_or_else(|| "project not found".to_string())?;
+    let live = window_manager::enumerate_windows(Some(state.self_pid));
+    let live_by_hwnd: HashMap<isize, &EnumeratedWindow> =
+        live.iter().map(|w| (w.hwnd, w)).collect();
+    let already: HashSet<isize> = project
+        .windows
+        .iter()
+        .filter_map(|w| w.last_seen_hwnd)
+        .collect();
+
+    let mut added = 0usize;
+    for h in hwnds {
+        if already.contains(&h) {
+            continue;
+        }
+        let Some(w) = live_by_hwnd.get(&h) else {
+            continue;
+        };
+        let class = if w.class_name.is_empty() {
+            None
+        } else {
+            Some(w.class_name.clone())
+        };
+        project.windows.push(WindowRef::new(
+            w.title.clone(),
+            w.exe_path.clone(),
+            class,
+            w.hwnd,
+        ));
+        added += 1;
+    }
+
+    if added > 0 {
+        project.updated_at = Utc::now();
+        state.store.upsert(project.clone()).map_err(err)?;
+        state.events.append(
+            EventKind::ProjectUpdated {
+                name: project.name.clone(),
+            },
+            Some(project.id),
+        );
+    }
+    Ok(ProjectView::from(project))
+}
+
+/// Remove a single window reference from a project (by WindowRef ID).
+/// Also forgets any dropped fingerprint that would reattach the same
+/// window — otherwise the pruner would silently re-add it on the next
+/// tick.
+#[tauri::command]
+pub fn remove_window_from_project(
+    state: State<'_, Arc<AppState>>,
+    id: Uuid,
+    window_id: Uuid,
+) -> Result<ProjectView, String> {
+    let mut project = state
+        .store
+        .get(id)
+        .ok_or_else(|| "project not found".to_string())?;
+    let removed = project
+        .windows
+        .iter()
+        .find(|w| w.id == window_id)
+        .cloned();
+    let Some(removed) = removed else {
+        return Ok(ProjectView::from(project));
+    };
+    project.windows.retain(|w| w.id != window_id);
+    project.dropped_fingerprints.retain(|fp| {
+        !(fp.exe_path.eq_ignore_ascii_case(&removed.exe_path)
+            && fp.title_pattern == removed.title_pattern)
+    });
+    project.updated_at = Utc::now();
+    state.store.upsert(project.clone()).map_err(err)?;
+    state.events.append(
+        EventKind::ProjectUpdated {
+            name: project.name.clone(),
+        },
+        Some(project.id),
+    );
+    Ok(ProjectView::from(project))
+}
+
+// -------------------------------------------------------------------
+// Preferences
+// -------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+pub struct PreferencesView {
+    pub dock_toggle_hotkey: String,
+    /// Whether `dock_toggle_hotkey` is a user override or the built-in
+    /// default. The UI uses this to show "(default)" next to the
+    /// shortcut and to enable the "Reset" affordance.
+    pub dock_toggle_is_custom: bool,
+}
+
+impl From<PreferencesFile> for PreferencesView {
+    fn from(p: PreferencesFile) -> Self {
+        let dock_toggle_is_custom = p.dock_toggle_hotkey.is_some();
+        Self {
+            dock_toggle_hotkey: p
+                .dock_toggle_hotkey
+                .unwrap_or_else(|| DEFAULT_DOCK_TOGGLE_COMBO.to_string()),
+            dock_toggle_is_custom,
+        }
+    }
+}
+
+#[tauri::command]
+pub fn get_preferences(state: State<'_, Arc<AppState>>) -> Result<PreferencesView, String> {
+    Ok(state.prefs.snapshot().into())
+}
+
+/// Set or clear the dock-toggle hotkey. Pass `None` to revert to the
+/// built-in default. Globally re-registers all shortcuts on success.
+#[tauri::command]
+pub fn set_dock_toggle_hotkey(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    combo: Option<String>,
+) -> Result<PreferencesView, String> {
+    if let Some(c) = &combo {
+        crate::hotkeys::validate_combo(c)?;
+    }
+    state.prefs.set_dock_toggle_hotkey(combo).map_err(err)?;
+    crate::hotkeys::reregister(&app).map_err(err)?;
+    Ok(state.prefs.snapshot().into())
+}
+
+/// Re-register the global hotkey set from the current store +
+/// preferences. Used by the frontend after `update_project` /
+/// `create_project` so a brand-new combo immediately becomes active.
+#[tauri::command]
+pub fn reregister_hotkeys(app: AppHandle) -> Result<(), String> {
+    crate::hotkeys::reregister(&app).map_err(err)
+}
+
+/// Validate that a combo parses correctly without persisting anything.
+/// The frontend calls this while the user is editing a hotkey so we can
+/// surface an inline error before they commit.
+#[tauri::command]
+pub fn validate_hotkey_combo(combo: String) -> Result<String, String> {
+    crate::hotkeys::validate_combo(&combo)
 }
 
 // -------------------------------------------------------------------
@@ -434,6 +633,10 @@ pub struct ProjectView {
     pub color: String,
     pub initials: String,
     pub hotkey_index: Option<u8>,
+    /// User-defined activation combo (e.g. `"Ctrl+Alt+F1"`). When set,
+    /// overrides `hotkey_index`. `None` means "use the slot from
+    /// `hotkey_index`".
+    pub hotkey_combo: Option<String>,
     pub windows: Vec<WindowRefView>,
     pub created_at: chrono::DateTime<Utc>,
     pub updated_at: chrono::DateTime<Utc>,
@@ -446,6 +649,13 @@ pub struct WindowRefView {
     pub title_snapshot: String,
     pub title_pattern: String,
     pub exe_path: String,
+    /// Whether the window is currently re-bindable to a live HWND. When
+    /// `false`, the dock UI shows a "closed" badge until either the window
+    /// reappears or the grace period elapses and the ref is auto-removed.
+    pub live: bool,
+    /// Number of consecutive pruner ticks the window has been missing.
+    /// Useful for diagnostics; surfaced as part of the UI badge.
+    pub missed_ticks: u8,
 }
 
 impl From<Project> for ProjectView {
@@ -456,6 +666,7 @@ impl From<Project> for ProjectView {
             color: p.color,
             initials: p.initials,
             hotkey_index: p.hotkey_index,
+            hotkey_combo: p.hotkey_combo,
             windows: p
                 .windows
                 .into_iter()
@@ -464,6 +675,8 @@ impl From<Project> for ProjectView {
                     title_snapshot: w.title_snapshot,
                     title_pattern: w.title_pattern,
                     exe_path: w.exe_path,
+                    live: w.live,
+                    missed_ticks: w.missed_ticks,
                 })
                 .collect(),
             created_at: p.created_at,

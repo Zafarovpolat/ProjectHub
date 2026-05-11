@@ -6,6 +6,20 @@ export interface WindowRefView {
   title_snapshot: string;
   title_pattern: string;
   exe_path: string;
+  /// Whether the window is currently rebindable to an open HWND. Goes
+  /// `false` the moment the window disappears and stays false until either
+  /// the window reappears or the backend's grace period expires and the
+  /// ref is auto-removed.
+  live: boolean;
+  /// Consecutive pruner ticks the window has been missing. 0 when live.
+  missed_ticks: number;
+}
+
+export interface PreferencesView {
+  /// Effective dock-toggle combo (user override if set, else default).
+  dock_toggle_hotkey: string;
+  /// Whether `dock_toggle_hotkey` is a user override or the default.
+  dock_toggle_is_custom: boolean;
 }
 
 export interface ProjectView {
@@ -14,6 +28,9 @@ export interface ProjectView {
   color: string;
   initials: string;
   hotkey_index: number | null;
+  /// User-defined activation combo (e.g. `"Ctrl+Alt+F1"`). When set,
+  /// overrides `hotkey_index`. `null` means "use the slot-index combo".
+  hotkey_combo: string | null;
   windows: WindowRefView[];
   created_at: string;
   updated_at: string;
@@ -48,6 +65,9 @@ export interface UpdateProjectInput {
   color?: string | null;
   initials?: string | null;
   hotkey_index?: number | null | undefined;
+  /// Set/clear the per-project hotkey combo. Use `undefined` to leave
+  /// it untouched, `null` to clear, or a string to set.
+  hotkey_combo?: string | null | undefined;
   window_hwnds?: number[] | null;
 }
 
@@ -67,6 +87,13 @@ export type EventKind =
     }
   | { type: "window_reattached"; project_name: string; title: string }
   | { type: "window_missing"; project_name: string; title: string }
+  | {
+      type: "window_auto_removed";
+      project_name: string;
+      title: string;
+      missed_ticks: number;
+    }
+  | { type: "window_auto_rebound"; project_name: string; title: string }
   | { type: "hotkey_triggered"; combo: string }
   | { type: "dock_toggled"; visible: boolean };
 

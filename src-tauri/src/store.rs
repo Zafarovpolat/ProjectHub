@@ -109,6 +109,25 @@ impl ProjectStore {
         Ok(removed)
     }
 
+    /// Run `f` with exclusive access to the project list, then optionally
+    /// persist. The closure returns `(R, dirty)` where `dirty` controls
+    /// whether the list is flushed to disk. This is used by hot paths
+    /// (e.g. the background pruner) that mutate transient in-memory state
+    /// every tick but only want disk writes when something durable changed.
+    pub fn with_projects_mut<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Vec<Project>) -> (R, bool),
+    {
+        let (out, dirty) = {
+            let mut guard = self.inner.write();
+            f(&mut guard.projects)
+        };
+        if dirty {
+            self.flush()?;
+        }
+        Ok(out)
+    }
+
     pub fn reorder(&self, order: &[Uuid]) -> Result<()> {
         {
             let mut guard = self.inner.write();

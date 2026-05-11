@@ -2,7 +2,10 @@
 
 mod commands;
 mod event_log;
+mod hotkeys;
+mod preferences;
 mod project;
+mod pruner;
 mod store;
 mod window_manager;
 
@@ -12,26 +15,12 @@ use parking_lot::Mutex;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Shortcut, ShortcutState};
 
-use crate::commands::{ActiveProject, AppState};
+use crate::commands::{ActiveProject, AppState, RouterAction, ShortcutRouter};
 use crate::event_log::{EventKind, EventLog};
+use crate::preferences::PreferencesStore;
 use crate::store::ProjectStore;
-
-/// Hotkey combos we register globally. Mirror these in `frontend` keymaps.
-const HOTKEY_TOGGLE_DOCK: (Modifiers, Code) =
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Space);
-const HOTKEY_PROJECT_PREFIX: &[(Modifiers, Code, u8)] = &[
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit1, 1),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit2, 2),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit3, 3),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit4, 4),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit5, 5),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit6, 6),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit7, 7),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit8, 8),
-    (Modifiers::CONTROL.union(Modifiers::ALT), Code::Digit9, 9),
-];
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -43,13 +32,18 @@ pub fn run() {
     let events = EventLog::default_path()
         .and_then(EventLog::open)
         .expect("failed to open event log");
+    let prefs = PreferencesStore::default_path()
+        .and_then(PreferencesStore::load_or_init)
+        .expect("failed to open preferences store");
     events.append(EventKind::AppStarted, None);
 
     let state = Arc::new(AppState {
         store,
         events,
+        prefs,
         active: Mutex::new(ActiveProject::default()),
         self_pid: window_manager::current_pid(),
+        router: Mutex::new(ShortcutRouter::default()),
     });
 
     tauri::Builder::default()
@@ -63,8 +57,11 @@ pub fn run() {
         )
         .manage(state.clone())
         .setup(move |app| {
-            register_global_shortcuts(app.handle())?;
+            hotkeys::reregister(app.handle()).map_err(to_tauri_err)?;
             install_tray(app.handle())?;
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                pruner::spawn(app.handle().clone(), state.inner().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -74,11 +71,17 @@ pub fn run() {
             commands::update_project,
             commands::delete_project,
             commands::reorder_projects,
+            commands::add_windows_to_project,
+            commands::remove_window_from_project,
             commands::activate_project,
             commands::activate_by_hotkey_index,
             commands::set_dock_visible,
             commands::read_recent_events,
             commands::palette_colors,
+            commands::get_preferences,
+            commands::set_dock_toggle_hotkey,
+            commands::reregister_hotkeys,
+            commands::validate_hotkey_combo,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
@@ -90,20 +93,6 @@ fn init_tracing() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .with_target(false)
         .try_init();
-}
-
-fn register_global_shortcuts(app: &tauri::AppHandle) -> tauri::Result<()> {
-    let gs = app.global_shortcut();
-
-    let toggle = Shortcut::new(Some(HOTKEY_TOGGLE_DOCK.0), HOTKEY_TOGGLE_DOCK.1);
-    gs.register(toggle).map_err(to_tauri_err)?;
-
-    for (mods, code, _idx) in HOTKEY_PROJECT_PREFIX {
-        let shortcut = Shortcut::new(Some(*mods), *code);
-        gs.register(shortcut).map_err(to_tauri_err)?;
-    }
-
-    Ok(())
 }
 
 fn to_tauri_err<E: std::fmt::Display>(err: E) -> tauri::Error {
@@ -119,29 +108,27 @@ fn handle_global_shortcut(
         return;
     }
 
-    let combo = format_shortcut(shortcut);
+    let combo = hotkeys::format_shortcut(shortcut);
 
-    if matches_hotkey(shortcut, HOTKEY_TOGGLE_DOCK.0, HOTKEY_TOGGLE_DOCK.1) {
-        toggle_dock_visibility(app, &combo);
+    let Some(state) = app.try_state::<Arc<AppState>>() else {
         return;
-    }
+    };
+    let action = state.router.lock().by_combo.get(&combo).cloned();
+    let Some(action) = action else {
+        return;
+    };
+    state
+        .events
+        .append(EventKind::HotkeyTriggered { combo: combo.clone() }, None);
 
-    if let Some(idx) = hotkey_to_project_index(shortcut) {
-        if let Some(state) = app.try_state::<Arc<AppState>>() {
-            state
-                .events
-                .append(EventKind::HotkeyTriggered { combo: combo.clone() }, None);
-            let _ = app.emit("hotkey:project", idx);
-
-            // Run activation off the UI thread.
+    match action {
+        RouterAction::ToggleDock => toggle_dock_visibility(app, &combo),
+        RouterAction::ActivateProject(project_id) => {
+            let _ = app.emit("hotkey:project", project_id);
             let app_clone = app.clone();
             let state_clone: Arc<AppState> = state.inner().clone();
             std::thread::spawn(move || {
-                let projects = state_clone.store.projects();
-                let Some(p) = projects.iter().find(|p| p.hotkey_index == Some(idx)) else {
-                    return;
-                };
-                match commands::do_activate(&app_clone, &state_clone, p.id) {
+                match commands::do_activate(&app_clone, &state_clone, project_id) {
                     Ok(result) => {
                         let _ = app_clone.emit("project:activated", &result);
                     }
@@ -173,36 +160,6 @@ fn toggle_dock_visibility(app: &tauri::AppHandle, combo: &str) {
             );
         }
     }
-}
-
-fn matches_hotkey(shortcut: &Shortcut, mods: Modifiers, key: Code) -> bool {
-    shortcut.mods == mods && shortcut.key == key
-}
-
-fn hotkey_to_project_index(shortcut: &Shortcut) -> Option<u8> {
-    HOTKEY_PROJECT_PREFIX
-        .iter()
-        .find(|(m, k, _)| shortcut.mods == *m && shortcut.key == *k)
-        .map(|(_, _, idx)| *idx)
-}
-
-fn format_shortcut(s: &Shortcut) -> String {
-    let mut parts = Vec::new();
-    if s.mods.contains(Modifiers::CONTROL) {
-        parts.push("Ctrl");
-    }
-    if s.mods.contains(Modifiers::ALT) {
-        parts.push("Alt");
-    }
-    if s.mods.contains(Modifiers::SHIFT) {
-        parts.push("Shift");
-    }
-    if s.mods.contains(Modifiers::SUPER) {
-        parts.push("Win");
-    }
-    let key = format!("{:?}", s.key);
-    parts.push(&key);
-    parts.join("+")
 }
 
 fn install_tray(app: &tauri::AppHandle) -> tauri::Result<()> {
