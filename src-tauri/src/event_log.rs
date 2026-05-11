@@ -60,6 +60,14 @@ pub enum EventKind {
         project_name: String,
         title: String,
     },
+    /// The pruner removed a window reference from a project because it has
+    /// been missing for `missed_ticks` consecutive pruner cycles (~ grace
+    /// period of `missed_ticks * tick_interval`).
+    WindowAutoRemoved {
+        project_name: String,
+        title: String,
+        missed_ticks: u8,
+    },
     HotkeyTriggered {
         combo: String,
     },

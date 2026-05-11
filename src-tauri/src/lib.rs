@@ -3,6 +3,7 @@
 mod commands;
 mod event_log;
 mod project;
+mod pruner;
 mod store;
 mod window_manager;
 
@@ -65,6 +66,9 @@ pub fn run() {
         .setup(move |app| {
             register_global_shortcuts(app.handle())?;
             install_tray(app.handle())?;
+            if let Some(state) = app.try_state::<Arc<AppState>>() {
+                pruner::spawn(app.handle().clone(), state.inner().clone());
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

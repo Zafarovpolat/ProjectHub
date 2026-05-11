@@ -6,6 +6,13 @@ export interface WindowRefView {
   title_snapshot: string;
   title_pattern: string;
   exe_path: string;
+  /// Whether the window is currently rebindable to an open HWND. Goes
+  /// `false` the moment the window disappears and stays false until either
+  /// the window reappears or the backend's grace period expires and the
+  /// ref is auto-removed.
+  live: boolean;
+  /// Consecutive pruner ticks the window has been missing. 0 when live.
+  missed_ticks: number;
 }
 
 export interface ProjectView {
@@ -67,6 +74,12 @@ export type EventKind =
     }
   | { type: "window_reattached"; project_name: string; title: string }
   | { type: "window_missing"; project_name: string; title: string }
+  | {
+      type: "window_auto_removed";
+      project_name: string;
+      title: string;
+      missed_ticks: number;
+    }
   | { type: "hotkey_triggered"; combo: string }
   | { type: "dock_toggled"; visible: boolean };
 

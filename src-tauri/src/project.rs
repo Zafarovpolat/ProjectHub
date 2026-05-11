@@ -34,6 +34,18 @@ pub struct WindowRef {
     /// across process restarts.
     #[serde(skip)]
     pub last_seen_hwnd: Option<isize>,
+    /// Whether the window is currently live (re-bindable to a real HWND).
+    /// Volatile in-memory state, updated by the background pruner.
+    #[serde(skip, default = "default_live")]
+    pub live: bool,
+    /// Number of consecutive pruner ticks the window has been missing.
+    /// When this reaches `GRACE_PERIOD_TICKS`, the window is auto-removed.
+    #[serde(skip)]
+    pub missed_ticks: u8,
+}
+
+fn default_live() -> bool {
+    true
 }
 
 impl WindowRef {
@@ -47,6 +59,8 @@ impl WindowRef {
             class_name,
             chrome_profile: None,
             last_seen_hwnd: Some(hwnd),
+            live: true,
+            missed_ticks: 0,
         }
     }
 }

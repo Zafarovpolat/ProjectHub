@@ -446,6 +446,13 @@ pub struct WindowRefView {
     pub title_snapshot: String,
     pub title_pattern: String,
     pub exe_path: String,
+    /// Whether the window is currently re-bindable to a live HWND. When
+    /// `false`, the dock UI shows a "closed" badge until either the window
+    /// reappears or the grace period elapses and the ref is auto-removed.
+    pub live: bool,
+    /// Number of consecutive pruner ticks the window has been missing.
+    /// Useful for diagnostics; surfaced as part of the UI badge.
+    pub missed_ticks: u8,
 }
 
 impl From<Project> for ProjectView {
@@ -464,6 +471,8 @@ impl From<Project> for ProjectView {
                     title_snapshot: w.title_snapshot,
                     title_pattern: w.title_pattern,
                     exe_path: w.exe_path,
+                    live: w.live,
+                    missed_ticks: w.missed_ticks,
                 })
                 .collect(),
             created_at: p.created_at,

@@ -1,16 +1,17 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
-  import { emit } from "@tauri-apps/api/event";
+  import { emit, listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   import type { ProjectView } from "$lib/types";
-  import { Trash2, ChevronUp, ChevronDown, Hash } from "lucide-svelte";
+  import { Trash2, ChevronUp, ChevronDown, Hash, AlertTriangle } from "lucide-svelte";
 
   let projects = $state<ProjectView[]>([]);
   let loading = $state(true);
   let errorMessage = $state<string | null>(null);
   let pendingDeleteId = $state<string | null>(null);
+  let expandedId = $state<string | null>(null);
 
   async function refresh() {
     try {
@@ -35,7 +36,16 @@
       }
     }
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    // The backend pruner emits `project:changed` whenever a window's
+    // live state flips or a ref is auto-removed. Re-fetch so badges
+    // and counts stay in sync without manual refresh.
+    const unlistenChanged = listen("project:changed", () => {
+      void refresh();
+    });
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      void unlistenChanged.then((fn) => fn());
+    };
   });
 
   async function deleteProject(id: string) {
@@ -116,6 +126,7 @@
       <p class="text-xs text-zinc-500">No projects yet.</p>
     {:else}
       {#each projects as p, idx (p.id)}
+        {@const offlineCount = p.windows.filter((w) => !w.live).length}
         <article
           class="flex flex-col gap-2 rounded-xl border border-white/8 bg-white/3 p-3"
         >
@@ -130,9 +141,25 @@
             </span>
             <div class="min-w-0 flex-1">
               <div class="truncate text-sm font-medium">{p.name}</div>
-              <div class="text-[11px] text-zinc-500">
-                {p.windows.length} window{p.windows.length === 1 ? "" : "s"}
-              </div>
+              <button
+                type="button"
+                class="-mx-1 -my-0.5 flex items-center gap-1.5 rounded px-1 py-0.5 text-[11px] text-zinc-500 hover:bg-white/5 hover:text-zinc-300"
+                onclick={() => (expandedId = expandedId === p.id ? null : p.id)}
+                aria-expanded={expandedId === p.id}
+              >
+                <span>
+                  {p.windows.length} window{p.windows.length === 1 ? "" : "s"}
+                </span>
+                {#if offlineCount > 0}
+                  <span
+                    class="inline-flex items-center gap-1 rounded-sm bg-orange-500/15 px-1.5 py-[1px] text-[10px] font-medium text-orange-300"
+                    title="{offlineCount} window{offlineCount === 1 ? '' : 's'} appear closed — auto-removed after ~15s"
+                  >
+                    <AlertTriangle size={10} />
+                    {offlineCount} closed
+                  </span>
+                {/if}
+              </button>
             </div>
 
             <div class="flex items-center gap-1">
@@ -205,6 +232,30 @@
               </button>
             </div>
           </div>
+
+          {#if expandedId === p.id && p.windows.length > 0}
+            <ul class="flex flex-col gap-1 rounded-md border border-white/5 bg-black/20 p-1.5">
+              {#each p.windows as w (w.id)}
+                <li
+                  class="flex items-center justify-between gap-2 rounded px-2 py-1 text-[11px]"
+                  class:opacity-60={!w.live}
+                >
+                  <span class="min-w-0 truncate" class:line-through={!w.live}>
+                    {w.title_snapshot || w.title_pattern}
+                  </span>
+                  {#if !w.live}
+                    <span
+                      class="inline-flex shrink-0 items-center gap-1 rounded-sm border border-orange-500/30 bg-orange-500/10 px-1.5 py-[1px] text-[10px] font-medium text-orange-300"
+                      title="Missed {w.missed_ticks} pruner tick{w.missed_ticks === 1 ? '' : 's'}"
+                    >
+                      <AlertTriangle size={10} />
+                      closed
+                    </span>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
 
           {#if pendingDeleteId === p.id}
             <div class="mt-1 flex items-center justify-between rounded-md bg-red-500/10 px-2 py-1.5 text-[11px]">
