@@ -285,12 +285,41 @@ pub fn do_activate(
         minimized += 1;
     }
 
-    // Restore project's windows in stored order; focus the first one last.
+    // Decide which window is "primary" (= the one we actually steal focus
+    // for). For now: the first window in the stored order that has a live
+    // HWND. The user can re-order windows inside a project later in v0.2.
+    let primary_idx = project.windows.iter().position(|w| w.last_seen_hwnd.is_some());
     let mut focused = 0usize;
-    for w in project.windows.iter().rev() {
-        if let Some(h) = w.last_seen_hwnd {
-            window_manager::focus_window(h);
+
+    if let Some(primary_idx) = primary_idx {
+        // Phase 1: raise every non-primary project window without stealing
+        // focus, so they're all visible behind the primary.
+        for (i, w) in project.windows.iter().enumerate() {
+            if i == primary_idx {
+                continue;
+            }
+            if let Some(h) = w.last_seen_hwnd {
+                window_manager::raise_window_noactivate(h);
+                focused += 1;
+            }
+        }
+
+        // Phase 2: focus the primary window with the full foreground-lock
+        // dance, and log the result so we can debug failed switches.
+        let primary = &project.windows[primary_idx];
+        if let Some(h) = primary.last_seen_hwnd {
+            let (succeeded, used_fallback) = window_manager::focus_window(h);
             focused += 1;
+            state.events.append(
+                EventKind::FocusAttempt {
+                    project_name: project.name.clone(),
+                    title: primary.title_snapshot.clone(),
+                    hwnd: h as i64,
+                    succeeded,
+                    used_fallback,
+                },
+                Some(project.id),
+            );
         }
     }
 

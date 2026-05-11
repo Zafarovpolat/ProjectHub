@@ -66,6 +66,13 @@ pub enum EventKind {
     DockToggled {
         visible: bool,
     },
+    FocusAttempt {
+        project_name: String,
+        title: String,
+        hwnd: i64,
+        succeeded: bool,
+        used_fallback: bool,
+    },
 }
 
 #[derive(Clone)]

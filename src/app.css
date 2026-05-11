@@ -28,6 +28,20 @@
     font-family: var(--font-display);
     -webkit-font-smoothing: antialiased;
     user-select: none;
+    /* The dock window is exactly its native size; no scroll on the html
+       root should ever appear. Internal scrollable regions opt-in. */
+    overflow: hidden;
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+  }
+
+  /* Inputs and contenteditable areas still need text selection. */
+  input,
+  textarea,
+  [contenteditable] {
+    user-select: text;
   }
 
   ::-webkit-scrollbar {

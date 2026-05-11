@@ -44,10 +44,14 @@ mod windows_impl {
         AttachThreadInput, OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_FORMAT,
         PROCESS_QUERY_LIMITED_INFORMATION,
     };
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        keybd_event, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, VK_MENU,
+    };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetClassNameW, GetForegroundWindow, GetWindowLongW, GetWindowTextLengthW,
-        GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindowVisible, SetForegroundWindow,
-        ShowWindow, GWL_EXSTYLE, SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, WS_EX_TOOLWINDOW,
+        AllowSetForegroundWindow, BringWindowToTop, EnumWindows, GetClassNameW, GetForegroundWindow,
+        GetWindowLongW, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic,
+        IsWindowVisible, SetForegroundWindow, ShowWindow, SwitchToThisWindow, GWL_EXSTYLE,
+        SW_MINIMIZE, SW_RESTORE, SW_SHOWNA, SW_SHOWNOACTIVATE, WS_EX_TOOLWINDOW,
     };
 
     /// Enumerate all visible top-level windows. Filters out tool windows,
@@ -153,44 +157,96 @@ mod windows_impl {
     }
 
     /// Restore (un-minimize) `hwnd` and bring it to the foreground.
-    /// Uses the `AttachThreadInput` trick to bypass Windows foreground-lock
-    /// when we don't own the recently-active input.
-    pub fn focus_window(hwnd: isize) {
+    ///
+    /// Windows foreground-lock is annoying: only the process that owns the
+    /// current foreground window is allowed to call `SetForegroundWindow` and
+    /// have it actually swap. We use three layered fallbacks:
+    /// 1. "Alt-key trick": fake an Alt keystroke, which Windows interprets as
+    ///    user input and momentarily lifts the foreground-lock for our PID.
+    /// 2. `AttachThreadInput` to share input queues with the current
+    ///    foreground thread.
+    /// 3. `SwitchToThisWindow` as a last resort — undocumented but widely
+    ///    used by shells, taskbar replacements, etc.
+    ///
+    /// Returns `(succeeded, used_fallback)` for the caller to log.
+    pub fn focus_window(hwnd: isize) -> (bool, bool) {
         unsafe {
             let target = HWND(hwnd as *mut _);
-            // `IsIconic` -> SW_RESTORE; otherwise SW_SHOWNA so we don't steal
-            // input twice.
+            if target.is_invalid() {
+                return (false, false);
+            }
+
+            // Unminimize if needed.
             if IsIconic(target).as_bool() {
                 let _ = ShowWindow(target, SW_RESTORE);
             } else {
                 let _ = ShowWindow(target, SW_SHOWNA);
             }
+
+            // 1. Fake Alt input to clear foreground-lock for this PID.
+            //    This is the standard hack used by shells and launchers.
+            keybd_event(VK_MENU.0 as u8, 0, KEYBD_EVENT_FLAGS(0), 0);
+            keybd_event(VK_MENU.0 as u8, 0, KEYEVENTF_KEYUP, 0);
+
+            let _ = BringWindowToTop(target);
             if SetForegroundWindow(target).as_bool() {
-                return;
+                return (true, false);
             }
 
-            // Foreground-lock fallback: attach to the thread owning the
-            // current foreground window, set foreground, detach.
+            // 2. Attach to the foreground thread's input queue and try again.
             let foreground = GetForegroundWindow();
-            if foreground.is_invalid() || foreground == target {
+            if !foreground.is_invalid() && foreground != target {
+                let fg_thread = GetWindowThreadProcessId(foreground, None);
+                let tg_thread = GetWindowThreadProcessId(target, None);
+                let self_thread = windows::Win32::System::Threading::GetCurrentThreadId();
+                if fg_thread != 0 && tg_thread != 0 {
+                    let _ = AttachThreadInput(self_thread, fg_thread, true);
+                    let _ = BringWindowToTop(target);
+                    let ok = SetForegroundWindow(target).as_bool();
+                    let _ = AttachThreadInput(self_thread, fg_thread, false);
+                    if ok {
+                        return (true, true);
+                    }
+                }
+            }
+
+            // 3. Last resort.
+            SwitchToThisWindow(target, true);
+            (false, true)
+        }
+    }
+
+    /// Show `hwnd` without stealing focus. Used to bring all of a project's
+    /// windows into view before activating the primary one.
+    pub fn raise_window_noactivate(hwnd: isize) {
+        unsafe {
+            let target = HWND(hwnd as *mut _);
+            if target.is_invalid() {
                 return;
             }
-            let mut fg_pid = 0u32;
-            let fg_thread = GetWindowThreadProcessId(foreground, Some(&mut fg_pid));
-            let mut tg_pid = 0u32;
-            let tg_thread = GetWindowThreadProcessId(target, Some(&mut tg_pid));
-            if fg_thread == 0 || tg_thread == 0 {
-                return;
+            if IsIconic(target).as_bool() {
+                // SW_RESTORE activates — accept that; the primary window will
+                // be activated last and end up on top.
+                let _ = ShowWindow(target, SW_RESTORE);
+            } else {
+                let _ = ShowWindow(target, SW_SHOWNOACTIVATE);
             }
-            let _ = AttachThreadInput(fg_thread, tg_thread, true);
-            let _ = SetForegroundWindow(target);
-            let _ = AttachThreadInput(fg_thread, tg_thread, false);
         }
     }
 
     pub fn minimize_window(hwnd: isize) {
         unsafe {
             let _ = ShowWindow(HWND(hwnd as *mut _), SW_MINIMIZE);
+        }
+    }
+
+    /// Grant the next process the right to call `SetForegroundWindow` (so
+    /// e.g. a child window we just created can come to the front without
+    /// fighting the foreground-lock).
+    #[allow(dead_code)]
+    pub fn allow_set_foreground(pid: u32) {
+        unsafe {
+            let _ = AllowSetForegroundWindow(pid);
         }
     }
 
@@ -219,8 +275,13 @@ mod stub_impl {
     pub fn enumerate_windows(_self_pid: Option<u32>) -> Vec<EnumeratedWindow> {
         Vec::new()
     }
-    pub fn focus_window(_hwnd: isize) {}
+    pub fn focus_window(_hwnd: isize) -> (bool, bool) {
+        (false, false)
+    }
+    pub fn raise_window_noactivate(_hwnd: isize) {}
     pub fn minimize_window(_hwnd: isize) {}
+    #[allow(dead_code)]
+    pub fn allow_set_foreground(_pid: u32) {}
     #[allow(dead_code)]
     pub fn restore_window(_hwnd: isize) {}
     pub fn current_pid() -> u32 {

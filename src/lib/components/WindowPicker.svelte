@@ -51,18 +51,18 @@
   );
 </script>
 
-<div class="flex flex-col gap-2 max-h-[420px]">
+<div class="flex h-full min-h-0 flex-col gap-2">
   <div class="flex items-center justify-between gap-2">
     <input
       type="text"
       placeholder="Filter windows…"
       bind:value={filter}
-      class="flex-1 rounded-lg border border-white/8 bg-white/4 px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-white/16 focus:outline-none"
+      class="min-w-0 flex-1 rounded-lg border border-white/10 bg-white/4 px-3 py-1.5 text-xs text-zinc-100 placeholder:text-zinc-500 focus:border-white/24 focus:outline-none"
     />
     <button
       type="button"
       onclick={refresh}
-      class="rounded-lg border border-white/8 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-300 hover:bg-white/8"
+      class="shrink-0 rounded-lg border border-white/10 bg-white/4 px-2.5 py-1.5 text-xs text-zinc-200 hover:bg-white/8"
     >
       Refresh
     </button>
@@ -73,12 +73,12 @@
   {:else if filtered.length === 0}
     <p class="text-xs text-zinc-500">No matching windows.</p>
   {:else}
-    <ul class="flex flex-col gap-1 overflow-y-auto pr-1">
+    <ul class="flex flex-1 min-h-0 flex-col gap-1 overflow-y-auto pr-1">
       {#each filtered as w (w.hwnd)}
         {@const checked = selected.includes(w.hwnd)}
         <li>
           <label
-            class="flex items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs hover:border-white/8 hover:bg-white/4"
+            class="flex items-center gap-2 rounded-lg border border-transparent px-2 py-1.5 text-xs hover:border-white/10 hover:bg-white/4"
             class:active-row={checked}
           >
             <input
