@@ -1,6 +1,6 @@
 [package]
 name = "projecthub"
-version = "0.1.0"
+version = "0.2.0"
 description = "Always-on-top project hub & orchestrator for multi-window workflows"
 authors = ["ProjectHub contributors"]
 edition = "2021"
