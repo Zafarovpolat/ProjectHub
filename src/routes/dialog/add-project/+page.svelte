@@ -5,7 +5,6 @@
   import { getCurrentWindow } from "@tauri-apps/api/window";
 
   import WindowPicker from "$lib/components/WindowPicker.svelte";
-  import { X } from "lucide-svelte";
 
   let name = $state("");
   let palette = $state<string[]>([]);
@@ -62,16 +61,11 @@
 <main
   class="flex h-screen w-screen flex-col gap-5 bg-zinc-950 p-6 text-zinc-100"
 >
-  <header class="flex items-center justify-between">
+  <header>
     <h1 class="text-base font-semibold">New project</h1>
-    <button
-      type="button"
-      class="flex h-8 w-8 items-center justify-center rounded-md text-zinc-400 hover:bg-white/8 hover:text-zinc-100"
-      onclick={close}
-      aria-label="Close"
-    >
-      <X size={16} />
-    </button>
+    <p class="mt-0.5 text-[11px] text-zinc-500">
+      Bundle a set of open windows under a shortcut.
+    </p>
   </header>
 
   <form class="flex flex-1 min-h-0 flex-col gap-5" onsubmit={submit}>

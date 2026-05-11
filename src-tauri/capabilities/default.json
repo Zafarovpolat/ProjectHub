@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Default capability for ProjectHub dock and dialogs",
-  "windows": ["main", "add-project"],
+  "windows": ["main", "add-project", "manage"],
   "permissions": [
     "core:default",
     "core:window:default",
